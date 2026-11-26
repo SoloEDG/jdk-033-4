@@ -2,13 +2,44 @@
 import { computed } from 'vue'
 import { Anchor, Crosshair, LocateFixed } from 'lucide-vue-next'
 import type { Course, Point, Sample } from '../../../shared/race'
+import { verdictLabel } from '../../trial'
+import type { GateForecast } from '../../trial'
 import { buoyPosition, gateEnds } from '../lib/geometry'
 import { pathFor, soundings } from '../lib/chartMarks'
 import BoatGlyph from './BoatGlyph.vue'
 
-const props = defineProps<{ course: Course; frame: Sample; trail: Point[]; replay: boolean; focus: Point | null }>()
+export interface FanView {
+  gateId: string
+  gateName: string
+  origin: Point
+  spread: number
+  inside: number
+  count: number
+  edges: Point[]
+  verdict: string
+}
+export interface LandfallView { id: string; point: Point; inside: boolean }
+
+const props = defineProps<{
+  course: Course
+  frame: Sample
+  trail: Point[]
+  replay: boolean
+  focus: Point | null
+  fan: FanView | null
+  landfalls: LandfallView[]
+  calls: GateForecast[] | null
+}>()
+
 const route = computed(() => pathFor([props.course.start, ...props.course.gates.flatMap(gate => gate.approach ? [gate.approach.center, gate.center] : [gate.center])]))
 const trailPath = computed(() => pathFor(props.trail))
+const fanPath = computed(() => props.fan ? pathFor([props.fan.origin, ...props.fan.edges, props.fan.origin]) : '')
+const nextCall = computed(() => props.calls?.find(call => call.gateId === props.course.gates[props.frame.nextGate]?.id) ?? null)
+const nextTone = computed(() => nextCall.value?.verdict ?? 'unknown')
+const stateLabel = computed(() => {
+  if (props.replay) return nextCall.value ? `回看 · 当时判罚 ${verdictLabel[nextCall.value.verdict]}` : '回看当时读数'
+  return nextCall.value ? `下一门 ${verdictLabel[nextCall.value.verdict]}` : '未校正'
+})
 </script>
 
 <template>
@@ -31,6 +62,7 @@ const trailPath = computed(() => pathFor(props.trail))
       </g>
       <text v-for="depth in soundings" :key="depth.join(',')" :x="depth[0]" :y="depth[1]" fill="#a7c2bd" opacity=".55" class="depth">{{ depth[2] }}</text>
       <path :d="route" fill="none" stroke="#d0c89c" stroke-width="1.6" stroke-dasharray="4 7" opacity=".63"/>
+      <path v-if="fan" :d="fanPath" fill="#ffd455" fill-opacity=".14" stroke="#ffd455" stroke-opacity=".55" stroke-width="1.2" stroke-dasharray="5 5"/>
       <path :d="trailPath" fill="none" stroke="#e9f6ef" stroke-width="2" stroke-linejoin="round"/>
       <g v-for="(gate, index) in course.gates" :key="gate.id" :opacity="index < frame.nextGate ? .42 : 1">
         <line v-if="gate.approach" :x1="gateEnds(gate.approach)[0].x" :y1="gateEnds(gate.approach)[0].y" :x2="gateEnds(gate.approach)[1].x" :y2="gateEnds(gate.approach)[1].y" :stroke="index === frame.nextGate ? '#ffd455' : '#a6b7a9'" stroke-width="1.4" stroke-dasharray="2 6"/>
@@ -38,6 +70,9 @@ const trailPath = computed(() => pathFor(props.trail))
         <circle :cx="buoyPosition(gate).x" :cy="buoyPosition(gate).y" r="9.5" :fill="index === frame.nextGate ? '#ffd455' : '#e77c62'" stroke="#1c3a3c" stroke-width="2.2"/>
         <circle :cx="gate.center.x" :cy="gate.center.y" r="3.6" :fill="index === frame.nextGate ? '#ffd455' : '#a6b7a9'"/>
         <text :x="gate.center.x + 13" :y="gate.center.y - 12" :fill="index === frame.nextGate ? '#ffd455' : '#e5e1c2'" class="water-text">{{ gate.id }} {{ gate.name }}</text>
+      </g>
+      <g v-for="landfall in landfalls" :key="landfall.id">
+        <circle :cx="landfall.point.x" :cy="landfall.point.y" r="4.2" :fill="landfall.inside ? '#9fe8b4' : '#ff9c78'" stroke="#1c3a3c" stroke-width="1.4"/>
       </g>
       <g v-if="focus" :transform="`translate(${focus.x} ${focus.y})`" stroke="#ffb44b" fill="none">
         <circle r="17" stroke-width="2"/><path d="M-24 0h11m26 0h11M0-24v11m0 26v11"/>
@@ -52,6 +87,6 @@ const trailPath = computed(() => pathFor(props.trail))
       </g>
     </svg>
     <div class="chart-tag"><Anchor :size="15"/><span>{{ course.name }}</span></div>
-    <div class="chart-state"><component :is="replay ? Crosshair : LocateFixed" :size="14"/>{{ replay ? '回看' : '实时' }}</div>
+    <div class="chart-state" :data-verdict="nextTone"><component :is="replay ? Crosshair : LocateFixed" :size="14"/>{{ stateLabel }}</div>
   </section>
 </template>

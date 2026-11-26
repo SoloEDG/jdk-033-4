@@ -1,9 +1,14 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import { BookOpen, Crosshair, X } from 'lucide-vue-next'
 import { clock } from '../../../shared/format'
 import type { RaceEvent, Voyage } from '../../../shared/race'
-defineProps<{ voyages: Voyage[]; selected: Voyage | null; events: RaceEvent[]; cursor: number; notice: string; locked: boolean }>()
+import { verdictLabel } from '../../trial/lib/solver'
+
+const props = defineProps<{ voyages: Voyage[]; selected: Voyage | null; events: RaceEvent[]; cursor: number; notice: string; locked: boolean }>()
 defineEmits<{ open: [id: string]; close: []; seek: [time: number]; focus: [event: RaceEvent] }>()
+
+const record = computed(() => props.selected?.record ?? null)
 </script>
 
 <template>
@@ -21,6 +26,13 @@ defineEmits<{ open: [id: string]; close: []; seek: [time: number]; focus: [event
     <div v-if="selected" class="replay-controls">
       <label for="playhead">{{ clock(cursor) }} / {{ clock(selected.duration) }}</label>
       <input id="playhead" type="range" min="0" :max="selected.duration" step=".01" :value="cursor" @input="$emit('seek', Number(($event.target as HTMLInputElement).value))">
+    </div>
+    <p class="empty-note record-line" data-testid="replay-record">
+      <template v-if="selected && record?.calibration">起航校正 · {{ record.calibration.label }}（保留 {{ record.calibration.retained }} 组）</template>
+      <template v-else-if="selected">旧航次 · 未记录校正参数，仅显示当时读数</template>
+    </p>
+    <div v-if="selected && record?.calls.length" class="call-strip" aria-label="当时的过门预判">
+      <span v-for="call in record.calls" :key="call.gateId" :data-verdict="call.verdict">{{ call.gateId }} · {{ verdictLabel[call.verdict] }}</span>
     </div>
     <p v-if="notice" class="empty-note">{{ notice }}</p>
     <div v-if="events.length" class="event-list">

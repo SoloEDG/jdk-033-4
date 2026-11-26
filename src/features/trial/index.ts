@@ -1,0 +1,6 @@
+export { useTrial } from './model/useTrial'
+export { default as TrialPanel } from './ui/TrialPanel.vue'
+export { default as TrialWorkbench } from './ui/TrialWorkbench.vue'
+export { courseOverGround, forecastGates, verdictLabel } from './lib/solver'
+export { DEMO_TRUTH } from './lib/demo'
+export type { Combo, GateForecast, GateVerdict, TrialData, TrialLeg, TrialReading } from './lib/types'

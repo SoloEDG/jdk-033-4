@@ -8,3 +8,6 @@ export function clock(seconds: number): string {
 }
 
 export const compass = (heading: number) => `${String(Math.round(normalize(heading + 90)) % 360).padStart(3, '0')}°`
+
+/** 罗经方位本身已经是 0° 北，直接取整显示 */
+export const bearing = (value: number) => `${String(Math.round(normalize(value)) % 360).padStart(3, '0')}°`

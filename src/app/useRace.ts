@@ -4,6 +4,10 @@ import { useWind } from '../features/wind'
 import { useSail } from '../features/sail'
 import { useJury } from '../features/jury'
 import { useLogbook } from '../features/logbook'
+import { useTrial } from '../features/trial'
+import { forecastGates, landfallOf, landfallSpread } from '../features/trial/lib/solver'
+import type { Combo, GateForecast } from '../features/trial/lib/types'
+import { compassFromChart, normalize } from '../shared/leeway'
 import type { Point, RaceEvent, RaceStatus, Sample } from '../shared/race'
 
 const stepSize = .025
@@ -14,21 +18,119 @@ export function useRace() {
   const sail = useSail(course)
   const jury = useJury(course)
   const logbook = useLogbook()
+  const trial = useTrial()
   const status = ref<RaceStatus>('ready')
   const elapsed = ref(0)
   const focus = ref<Point | null>(null)
+
+  /** 校正在起航瞬间锁定，中途改样本不会影响正在进行的这一场 */
+  const raceCalibration = ref<{ dev: number; k: number } | null>(null)
+  const raceCombos = ref<Combo[] | null>(null)
+  const raceSnapshot = ref<{ single: number; roundTrip: number; devRange: [number, number]; kRange: [number, number] } | null>(null)
+  const calibration = computed(() => raceCalibration.value ?? trial.effective.value ?? { dev: 0, k: 0 })
+  const autoCalibration = computed(() => trial.auto.value)
+  /** 比赛用起航时锁定的组合；未起航时用当前保留集 */
+  const combos = computed(() => raceCombos.value ?? trial.retained.value)
+
   const live = computed<Sample>(() => ({
     time: elapsed.value, boat: sail.boat.value, wind: wind.sample(elapsed.value),
     nextGate: jury.nextGate.value, penalty: jury.penalty.value,
+    compass: compassFromChart(sail.boat.value.heading, calibration.value.dev),
   }))
   const frame = computed(() => logbook.frame.value ?? live.value)
   const trail = computed(() => (logbook.selected.value?.samples ?? logbook.samples.value).map(sample => sample.boat.position))
   const active = computed(() => status.value === 'running' || status.value === 'paused')
+
+  /** 用一组参数把当前读数换算成预报输入 */
+  function inputOf(sample: Sample) {
+    return {
+      position: sample.boat.position,
+      compass: sample.compass ?? compassFromChart(sample.boat.heading, calibration.value.dev),
+      sheet: sample.boat.sheet,
+      windFrom: normalize(sample.wind.bearing + 90),
+    }
+  }
+
+  /** 新驾驶：按仍在误差范围内的全部组合预判每一道门；没有合格组合就不下判断 */
+  const forecast = computed(() => combos.value.length
+    ? forecastGates(inputOf(frame.value), combos.value, course.gates)
+    : null)
+
+  /** 起航那一刻的预判，随航次一并存档；回看时不再用今天的参数重算 */
+  const departureCalls = ref<GateForecast[] | null>(null)
+  /** 每一道门刚变成“下一门”时的判罚，比出发时的快照更贴近当时 */
+  const gateCalls = ref<GateForecast[]>([])
+
+  function recordGateCall(index: number, sample: Sample) {
+    const gate = course.gates[index]
+    if (!gate || gateCalls.value.some(call => call.gateId === gate.id)) return
+    const [call] = forecastGates(inputOf(sample), combos.value, [gate])
+    if (call) gateCalls.value = [...gateCalls.value, call]
+  }
+
+  /** 存档用：实际经过的门取“当时”的判罚，没走到的门取起航快照 */
+  function archivedCalls() {
+    const departure = departureCalls.value ?? forecast.value ?? []
+    return course.gates.map(gate =>
+      gateCalls.value.find(call => call.gateId === gate.id)
+      ?? departure.find(call => call.gateId === gate.id)
+      ?? { gateId: gate.id, gateName: gate.name, verdict: 'fail' as const, inside: 0, cross: 0, total: 0, span: null, reason: '未记录' })
+  }
+
+  /** 回看：显示当时存下的判罚，而不是用今天的参数重算；旧航次没有存档就显示为空 */
+  const replayCalls = computed(() => {
+    const calls = logbook.selected.value?.record?.calls
+    return calls && calls.length ? calls : null
+  })
+  const replayCalibration = computed(() => logbook.selected.value?.record?.calibration ?? null)
+  /** 面板与航图统一取这一份：回看只用存档里的判罚，旧航次没有存档就不显示 */
+  const displayCalls = computed(() => logbook.selected.value ? replayCalls.value : forecast.value)
+
+  /** 当前目标门上，几组代表性参数会落在哪：两条边界航迹 + 落点跨度 */
+  const fan = computed(() => {
+    if (logbook.selected.value) return null
+    const gate = course.gates[frame.value.nextGate]
+    if (!gate) return null
+    const input = inputOf(live.value)
+    const spread = landfallSpread(input, combos.value, gate)
+    if (!spread) return null
+    const edges = [...spread.hits].sort((a, b) => a.across - b.across)
+    return {
+      gateId: gate.id,
+      gateName: gate.name,
+      origin: input.position,
+      spread: spread.spread,
+      inside: spread.inside,
+      count: spread.count,
+      edges: [edges[0], edges[edges.length - 1]].map(hit => hit.point),
+      verdict: forecast.value?.[frame.value.nextGate]?.verdict ?? 'fail',
+    }
+  })
+
+  /** 一组边界组合的落点，便于数出“同样合格的参数却落在不同位置” */
+  const landfalls = computed(() => {
+    if (logbook.selected.value) return []
+    const gate = course.gates[frame.value.nextGate]
+    if (!gate) return []
+    const input = inputOf(live.value)
+    return trial.representatives.value
+      .map(combo => {
+        const hit = landfallOf(input, combo, gate)
+        return hit ? { id: `${combo.dev}/${combo.k}`, combo, point: hit.point, inside: hit.inside } : null
+      })
+      .filter((item): item is NonNullable<typeof item> => Boolean(item))
+  })
+
   let animation = 0, last = 0, pending = 0
   function reset() {
     status.value = 'ready'
     elapsed.value = pending = 0
     focus.value = null
+    departureCalls.value = null
+    gateCalls.value = []
+    raceCalibration.value = null
+    raceCombos.value = null
+    raceSnapshot.value = null
     logbook.selected.value = null
     logbook.samples.value = []
     sail.reset()
@@ -39,7 +141,19 @@ export function useRace() {
     reset()
     wind.set(mode)
     status.value = 'running'
+    raceCalibration.value = trial.effective.value ? { ...trial.effective.value } : null
+    raceCombos.value = [...trial.retained.value]
+    raceSnapshot.value = {
+      single: trial.fit.value.single.length,
+      roundTrip: trial.fit.value.roundTrip.length,
+      devRange: trial.fit.value.retainedSet.dev ?? [0, 0],
+      kRange: trial.fit.value.retainedSet.k ?? [0, 0],
+    }
     jury.add('start', '出发', 0, sail.boat.value.position)
+    departureCalls.value = forecastGates(inputOf(live.value), combos.value, course.gates)
+    if (!departureCalls.value.length) departureCalls.value = null
+    gateCalls.value = []
+    recordGateCall(0, live.value)
     logbook.record(live.value, true)
   }
   function togglePause() {
@@ -51,16 +165,34 @@ export function useRace() {
     if (!active.value) return
     if (result === 'abandoned') jury.add('abandon', '结束航次', elapsed.value, sail.boat.value.position)
     logbook.record(live.value, true)
+    const chosen = raceCalibration.value
+    const snapshot = raceSnapshot.value
     logbook.archive({
       courseId: course.id, windMode: wind.mode.value, status: result,
       duration: elapsed.value, penalty: jury.penalty.value, events: [...jury.events.value],
+      record: {
+        calibration: chosen ? {
+          label: `偏差 ${chosen.dev.toFixed(1)}° · 横滑 ${chosen.k.toFixed(1)}`,
+          dev: chosen.dev, k: chosen.k,
+          retained: (raceCombos.value ?? []).length,
+          roundTrip: snapshot?.roundTrip ?? 0,
+          single: snapshot?.single ?? 0,
+          devRange: snapshot?.devRange ?? [chosen.dev, chosen.dev],
+          kRange: snapshot?.kRange ?? [chosen.k, chosen.k],
+        } : null,
+        calls: archivedCalls().map(call => ({
+          gateId: call.gateId, gateName: call.gateName, verdict: call.verdict,
+          inside: call.inside, cross: call.cross, total: call.total, span: call.span, reason: call.reason,
+        })),
+        capturedAt: elapsed.value,
+      },
     })
     status.value = result
   }
   function tick() {
     const from = sail.boat.value
     const previousEvent = jury.events.value.at(-1)
-    const next = sail.step(live.value.wind, stepSize)
+    const next = sail.step(live.value.wind, stepSize, calibration.value)
     const verdict = jury.inspect(from.position, next.position, elapsed.value, stepSize)
     sail.boat.value = verdict.blocked ? { ...next, position: from.position, knots: 0 } : next
     elapsed.value += stepSize
@@ -75,6 +207,7 @@ export function useRace() {
       logbook.record({ ...live.value, time: event.time, wind: wind.sample(event.time),
         boat: { ...next, position: event.position } }, true)
     }
+    if (jury.nextGate.value !== gateCalls.value.length) recordGateCall(jury.nextGate.value, live.value)
     logbook.record(live.value, event?.time === elapsed.value)
     if (elapsed.value >= maxDuration) end('abandoned')
   }
@@ -118,5 +251,9 @@ export function useRace() {
     window.removeEventListener('keyup', keyup)
     window.removeEventListener('blur', suspend)
   })
-  return { course, wind, sail, jury, logbook, status, focus, frame, trail, active, start, togglePause, end, locate }
+  return {
+    course, wind, sail, jury, logbook, trial, status, focus, frame, trail, active,
+    calibration, autoCalibration, forecast, displayCalls, replayCalls, replayCalibration, fan, landfalls,
+    start, togglePause, end, locate,
+  }
 }

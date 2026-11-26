@@ -9,7 +9,7 @@ export const course: Course = {
   gates: [
     { id: '01', name: '岬角标', center: { x: 303, y: 354 }, bearing: -33, width: 102, buoySide: -1,
       approach: { center: { x: 257, y: 397 }, bearing: -31, width: 108 } },
-    { id: '02', name: '外湾标', center: { x: 531, y: 232 }, bearing: 26, width: 94, buoySide: -1,
+    { id: '02', name: '外湾标', center: { x: 531, y: 232 }, bearing: 26, width: 84, buoySide: -1,
       approach: { center: { x: 486, y: 236 }, bearing: -29, width: 82 } },
     { id: '03', name: '礁口标', center: { x: 697, y: 333 }, bearing: 34, width: 112, buoySide: 1,
       approach: { center: { x: 658, y: 307 }, bearing: 31, width: 102 } },
